@@ -409,22 +409,20 @@ def fix_gitlab_pages_settings(
 
 
 def main():
-    github_token = os.environ.get("GITHUB_TOKEN")
-    gitlab_token = os.environ.get("GITLAB_TOKEN")
+    github_token = os.environ.get("GH_TOKEN")
+    gitlab_token = os.environ.get("GL_TOKEN")
 
     if not github_token:
         raise RuntimeError(
-            "GITHUB_TOKEN is not set."
+            "GH_TOKEN is not set."
         )
 
     if not gitlab_token:
         raise RuntimeError(
-            "GITLAB_TOKEN is not set."
+            "GL_TOKEN is not set."
         )
 
-    print(
-        "-> Getting GitHub repositories..."
-    )
+    print("-> Getting GitHub repositories...")
 
     repos = get_github_repos(
         github_token
@@ -458,7 +456,6 @@ def main():
             )
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
