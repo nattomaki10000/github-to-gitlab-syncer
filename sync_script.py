@@ -9,13 +9,9 @@ GH_USER = "nattomaki10000"
 GL_NAMESPACE = "nattomaki10000"
 
 def get_github_public_repos():
-    # システムによるURLの自動結合バグを防ぐため、文字列を完全にバラバラにして合体させます
-    part1 = "https://"
-    part2 = "://github.com"
-    part3 = "/users/"
-    part4 = "nattomaki10000"
-    part5 = "/repos"
-    url = part1 + part2 + part3 + part4 + part5
+    # システムによる勝手なURL変換を100%防ぐため、1文字ずつの配列を合体させます
+    chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'a', 'p', 'i', '.', 'g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm', '/', 'u', 's', 'e', 'r', 's', '/', 'n', 'a', 't', 't', 'o', 'm', 'a', 'k', 'i', '1', '0', '0', '0', '0', '/', 'r', 'e', 'p', 'o', 's']
+    url = "".join(chars)
 
     repos = []
     page = 1
@@ -44,22 +40,24 @@ def get_github_public_repos():
     return repos
 
 def unprotect_gitlab_branch(project_id, branch_name="main"):
-    p1 = "https://"
-    p2 = "gitlab.com"
-    p3 = "/api/v4/projects/"
-    url_main = p1 + p2 + p3 + f"{project_id}/protected_branches/{branch_name}"
+    # GitLabのURLも同様にシステム干渉を完全に防ぎます
+    p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
+    base_url = "".join(p_chars)
+    
+    url_main = base_url + f"{project_id}/protected_branches/{branch_name}"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
     requests.delete(url_main, headers=headers, timeout=30)
     
-    url_master = p1 + p2 + p3 + f"{project_id}/protected_branches/master"
+    url_master = base_url + f"{project_id}/protected_branches/master"
     requests.delete(url_master, headers=headers, timeout=30)
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
-    p1 = "https://"
-    p2 = "gitlab.com"
-    ns_url = p1 + p2 + "/api/v4/namespaces"
+    p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/']
+    base_url = "".join(p_chars)
+    
+    ns_url = base_url + "namespaces"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
     if ns_resp.status_code != 200:
@@ -74,7 +72,7 @@ def create_gitlab_repo(repo_full_name):
     if namespace is None:
         raise Exception(f"GitLab namespace '{GL_NAMESPACE}' not found")
 
-    api_url = p1 + p2 + "/api/v4/projects"
+    api_url = base_url + "projects"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
 
     existing = requests.get(f"{api_url}?search={repo_name}", headers=headers, timeout=30)
@@ -104,9 +102,13 @@ def create_gitlab_repo(repo_full_name):
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
     
-    # Gitコマンド用のURLも同様に厳重に分割結合します
-    gh_url = "https://" + "x-access-token:" + GH_TOKEN + "@" + "://github.com" + repo_full_name + ".git"
-    gl_url = "https://" + "oauth2:" + GL_TOKEN + "@" + "://gitlab.com" + GL_NAMESPACE + "/" + repo_name + ".git"
+    # クローン用、プッシュ用のベース文字列
+    protocol = "".join(['h', 't', 't', 'p', 's', ':', '/', '/'])
+    gh_domain = "".join(['g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm', '/'])
+    gl_domain = "".join(['g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/'])
+    
+    gh_url = protocol + "x-access-token:" + GH_TOKEN + "@" + gh_domain + repo_full_name + ".git"
+    gl_url = protocol + "oauth2:" + GL_TOKEN + "@" + gl_domain + GL_NAMESPACE + "/" + repo_name + ".git"
 
     temp_dir = repo_name
     if os.path.exists(temp_dir):
