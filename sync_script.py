@@ -9,19 +9,15 @@ GH_USER = os.environ.get("GH_USER", "nattomaki10000")
 GL_NAMESPACE = os.environ.get("GL_NAMESPACE", "nattomaki10000")
 
 def get_github_public_repos():
-    url = "https://github.com"
-    # 修正点: 406エラーを引き起こす "Accept" ヘッダーを削除し、最もシンプルな認証のみにしました
-    headers = {
-        "Authorization": f"Bearer {GH_TOKEN}"
-    }
-
+    url = "https://api.github.com/users/{}/repos".format(GH_USER)
+    # 認証なしにして、403/429フィルターを回避
     repos = []
     page = 1
     while True:
         r = requests.get(
             url,
-            headers=headers,
-            params={"visibility": "public", "affiliation": "owner", "per_page": 100, "page": page},
+            # ヘッダーを付与しない（認証なし）
+            params={"type": "owner", "per_page": 100, "page": page},
             timeout=30
         )
         if r.status_code != 200:
@@ -32,8 +28,7 @@ def get_github_public_repos():
             break
 
         for repo in items:
-            if repo["owner"]["login"] != GH_USER:
-                continue
+            # フォークやプライベートを除外（ロジック維持）
             if repo["private"] or repo["fork"]:
                 continue
             if repo["name"].startswith("."):
@@ -46,17 +41,18 @@ def get_github_public_repos():
 
 def unprotect_gitlab_branch(project_id, branch_name="main"):
     """GitLabの指定ブランチの保護設定をAPI経由で自動解除する機能"""
-    url = f"https://gitlab.com{project_id}/protected_branches/{branch_name}"
+    url = f"https://gitlab.com/api/v4/projects/{project_id}/protected_branches/{branch_name}"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
     requests.delete(url, headers=headers, timeout=30)
     
-    url_master = f"https://gitlab.com{project_id}/protected_branches/master"
+    url_master = f"https://gitlab.com/api/v4/projects/{project_id}/protected_branches/master"
     requests.delete(url_master, headers=headers, timeout=30)
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
-    ns_url = "https://gitlab.com"
+    # namespace の ID を探す
+    ns_url = "https://gitlab.com/api/v4/namespaces"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
     if ns_resp.status_code != 200:
@@ -71,7 +67,7 @@ def create_gitlab_repo(repo_full_name):
     if namespace is None:
         raise Exception(f"GitLab namespace '{GL_NAMESPACE}' not found")
 
-    api_url = "https://gitlab.com"
+    api_url = "https://gitlab.com/api/v4/projects"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
 
     existing = requests.get(f"{api_url}?search={repo_name}", headers=headers, timeout=30)
@@ -100,8 +96,8 @@ def create_gitlab_repo(repo_full_name):
 
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
-    gh_url = f"https://x-access-token:{GH_TOKEN}@://github.com{repo_full_name}.git"
-    gl_url = f"https://oauth2:{GL_TOKEN}@://gitlab.com{GL_NAMESPACE}/{repo_name}.git"
+    gh_url = f"https://x-access-token:{GH_TOKEN}@github.com/{repo_full_name}.git"
+    gl_url = f"https://oauth2:{GL_TOKEN}@gitlab.com/{GL_NAMESPACE}/{repo_name}.git"
 
     temp_dir = repo_name
     if os.path.exists(temp_dir):
