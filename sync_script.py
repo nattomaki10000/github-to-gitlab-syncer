@@ -96,10 +96,55 @@ def mirror_push(repo_full_name):
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
 
-    subprocess.run(["git", "clone", "--mirror", gh_url, temp_dir], check=True)
+    # 1. 判定とファイル操作を行うため、通常のクローンを実行
+    subprocess.run(["git", "clone", gh_url, temp_dir], check=True)
     try:
-        subprocess.run(["git", "-C", temp_dir, "push", "--mirror", gl_url], check=True)
+        # --- ★ここから：static.ymlの存在判定とGitLab Pages設定 ---
+        
+        # GitHub Pagesの自動公開設定（static.yml）のパス
+        static_yml_path = os.path.join(temp_dir, ".github", "workflows", "static.yml")
+        ci_file_path = os.path.join(temp_dir, ".gitlab-ci.yml")
+        
+        # .github/workflows/static.yml が存在する場合のみ処理を実行
+        if os.path.exists(static_yml_path):
+            print(f"-> GitHub Pages detected (.github/workflows/static.yml found)")
+            
+            # すでにGitLab用の設定ファイルがない場合だけ、自動生成する
+            if not os.path.exists(ci_file_path):
+                gitlab_ci_content = """pages:
+  stage: deploy
+  script:
+    - mkdir .public
+    - cp -r * .public/ 2>/dev/null || true
+    - rm -rf .public/.git .public/.github
+    - mv .public public
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
+    - master
+"""
+                with open(ci_file_path, "w", encoding="utf-8") as f:
+                    f.write(gitlab_ci_content)
+                
+                # 生成した設定ファイルをGitのコミットに含める
+                subprocess.run(["git", "-C", temp_dir, "config", "user.name", "GitHub Actions"], check=True)
+                subprocess.run(["git", "-C", temp_dir, "config", "user.email", "actions@github.com"], check=True)
+                subprocess.run(["git", "-C", temp_dir, "add", ".gitlab-ci.yml"], check=True)
+                subprocess.run(["git", "-C", temp_dir, "commit", "-m", "chore: add .gitlab-ci.yml for GitLab Pages [skip ci]"], check=True)
+                print("-> Added .gitlab-ci.yml for GitLab Pages")
+        else:
+            print(f"-> Regular repository (No static.yml found). Skipping GitLab Pages setup.")
+            
+        # --- ★ここまで ---
+
+        # 2. GitLabへ強制ミラープッシュ（変更内容をすべて同期）
+        subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--all"], check=True)
+        subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--tags"], check=True)
+        
     finally:
+        # 一時フォルダの完全削除
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
