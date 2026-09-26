@@ -409,13 +409,18 @@ def fix_gitlab_pages_settings(
 
 
 def main():
-    github_token = input(
-        "GitHub token: "
-    ).strip()
+    github_token = os.environ.get("GITHUB_TOKEN")
+    gitlab_token = os.environ.get("GITLAB_TOKEN")
 
-    gitlab_token = input(
-        "GitLab token: "
-    ).strip()
+    if not github_token:
+        raise RuntimeError(
+            "GITHUB_TOKEN is not set."
+        )
+
+    if not gitlab_token:
+        raise RuntimeError(
+            "GITLAB_TOKEN is not set."
+        )
 
     print(
         "-> Getting GitHub repositories..."
