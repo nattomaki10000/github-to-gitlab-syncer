@@ -1,242 +1,422 @@
 import os
 import shutil
 import subprocess
+import tempfile
 import requests
-import time
 
-GH_TOKEN = os.environ.get("GH_TOKEN", "")
-GL_TOKEN = os.environ.get("GL_TOKEN", "")
-GH_USER = "nattomaki10000"
-GL_NAMESPACE = "nattomaki10000"
+GITHUB_USER = "nattomaki10000"
 
-def get_github_public_repos():
-    # システムによるURLの自動結合を防ぐため、1文字ずつの配列を合体
-    chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'a', 'p', 'i', '.', 'g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm', '/', 'u', 's', 'e', 'r', 's', '/', 'n', 'a', 't', 't', 'o', 'm', 'a', 'k', 'i', '1', '0', '0', '0', '0', '/', 'r', 'e', 'p', 'o', 's']
-    url = "".join(chars)
+GITHUB_API_URL = "[https://api.github.com](https://api.github.com)"
+GITLAB_API_URL = "[https://gitlab.com/api/v4](https://gitlab.com/api/v4)"
 
-    repos = []
-    page = 1
-    while True:
-        r = requests.get(
-            url,
-            params={"type": "owner", "per_page": 100, "page": page},
-            timeout=30
-        )
-        if r.status_code != 200:
-            raise Exception(f"GitHub API failed: {r.status_code} {r.text}")
+GITHUB_PAGES_DOMAIN = "nattomaki10000.github.io"
+GITLAB_PAGES_DOMAIN = "nattomaki10000.gitlab.io"
 
-        items = r.json()
-        if not items:
-            break
+def run_command(command, cwd=None):
+result = subprocess.run(
+command,
+cwd=cwd,
+text=True,
+capture_output=True
+)
 
-        for repo in items:
-            if repo["private"] or repo["fork"]:
+
+if result.returncode != 0:
+    print(result.stdout)
+    print(result.stderr)
+    raise RuntimeError(f"Command failed: {' '.join(command)}")
+
+return result.stdout.strip()
+
+
+def get_github_repos(github_token):
+headers = {
+"Authorization": f"Bearer {github_token}",
+"Accept": "application/vnd.github+json"
+}
+
+
+repos = []
+page = 1
+
+while True:
+    url = (
+        f"{GITHUB_API_URL}/users/{GITHUB_USER}/repos"
+        f"?type=public&per_page=100&page={page}"
+    )
+
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    data = response.json()
+
+    if not data:
+        break
+
+    for repo in data:
+        if not repo["fork"]:
+            repos.append(repo)
+
+    page += 1
+
+return repos
+
+
+def get_gitlab_namespace_id(gitlab_token):
+headers = {
+"PRIVATE-TOKEN": gitlab_token
+}
+
+
+response = requests.get(
+    f"{GITLAB_API_URL}/namespaces",
+    headers=headers,
+    params={"search": GITHUB_USER}
+)
+response.raise_for_status()
+
+for namespace in response.json():
+    if namespace["name"] == GITHUB_USER:
+        return namespace["id"]
+
+raise RuntimeError(f"GitLab namespace not found: {GITHUB_USER}")
+
+
+def create_gitlab_repo(repo_full_name, gitlab_token):
+original_repo_name = repo_full_name.split("/")[-1]
+
+
+if original_repo_name == GITHUB_PAGES_DOMAIN:
+    repo_name = GITLAB_PAGES_DOMAIN
+else:
+    repo_name = original_repo_name
+
+headers = {
+    "PRIVATE-TOKEN": gitlab_token
+}
+
+response = requests.get(
+    f"{GITLAB_API_URL}/projects",
+    headers=headers,
+    params={"search": repo_name}
+)
+response.raise_for_status()
+
+for project in response.json():
+    if (
+        project["path"] == repo_name
+        and project["namespace"]["name"] == GITHUB_USER
+    ):
+        print(f"-> GitLab repository already exists: {repo_name}")
+        return project
+
+data = {
+    "name": repo_name,
+    "path": repo_name,
+    "namespace_id": get_gitlab_namespace_id(gitlab_token),
+    "visibility": "public"
+}
+
+response = requests.post(
+    f"{GITLAB_API_URL}/projects",
+    headers=headers,
+    data=data
+)
+response.raise_for_status()
+
+project = response.json()
+
+print(f"-> Created GitLab repository: {repo_name}")
+
+return project
+
+
+def replace_github_pages_domain(temp_dir):
+old_domain = GITHUB_PAGES_DOMAIN
+new_domain = GITLAB_PAGES_DOMAIN
+
+
+old_bytes = old_domain.encode("utf-8")
+new_bytes = new_domain.encode("utf-8")
+
+replaced_files = 0
+replaced_count = 0
+
+print(f"-> Replacing {old_domain} with {new_domain}...")
+
+for root, dirs, files in os.walk(temp_dir):
+    if ".git" in dirs:
+        dirs.remove(".git")
+
+    for filename in files:
+        file_path = os.path.join(root, filename)
+
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+
+            if b"\x00" in data:
                 continue
-            if repo["name"].startswith("."):
+
+            if old_bytes not in data:
                 continue
-            repos.append(repo["full_name"])
 
-        page += 1
+            count = data.count(old_bytes)
+            new_data = data.replace(old_bytes, new_bytes)
 
-    return repos
+            with open(file_path, "wb") as f:
+                f.write(new_data)
 
-def unprotect_gitlab_branch(project_id, branch_name="main"):
-    p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
-    base_url = "".join(p_chars)
-    
-    url_main = base_url + f"{project_id}/protected_branches/{branch_name}"
-    headers = {"PRIVATE-TOKEN": GL_TOKEN}
-    requests.delete(url_main, headers=headers, timeout=30)
-    
-    url_master = base_url + f"{project_id}/protected_branches/master"
-    requests.delete(url_master, headers=headers, timeout=30)
+            replaced_files += 1
+            replaced_count += count
 
-def fix_gitlab_pages_settings(project_id):
-    """
-    【完全解決版】
-    1. プロジェクト自体のベース可視性をpublicにする
-    2. 初回のPagesデプロイ（ビルドパイプライン）が正常完了してURLが生成されるまで安全に待機する
-    3. 完全にデプロイが完了した後に、Pagesのアクセスレベルを単独で「public (Everyone)」にする
-    4. 最後に一意のドメイン（Unique Domain）を無効化する
-    """
-    p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
-    base_url = "".join(p_chars)
-    headers = {"PRIVATE-TOKEN": GL_TOKEN}
+            print(
+                f"   -> {os.path.relpath(file_path, temp_dir)} "
+                f"({count} replacement(s))"
+            )
 
-    project_url = base_url + f"{project_id}"
-    pages_url = base_url + f"{project_id}/pages"
+        except (OSError, PermissionError) as e:
+            print(f"   -> Skipped: {file_path}: {e}")
 
-    # ステップ1: 大元のプロジェクト自体の可視性を確実に public に独立して設定
-    print(f"-> [1/4] Ensuring project base visibility is public...")
-    requests.put(project_url, headers=headers, json={"visibility": "public"}, timeout=30)
+print(
+    f"-> Replaced {replaced_count} occurrence(s) "
+    f"in {replaced_files} file(s)"
+)
 
-    # ステップ2: 【超重要】CI/CDのPagesジョブが走り、デプロイに成功して「url」フィールドが生成されるまで待つ
-    print(f"-> [2/4] Waiting for GitLab Pages pipeline deployment to complete (Timeout: 5 min)...")
-    deployment_completed = False
-    
-    # 初回のCI実行とビルド、デプロイ完了まで時間が必要なため、10秒おきに最大30回（5分間）ループ待機
-    for i in range(30):
-        check_resp = requests.get(pages_url, headers=headers, timeout=30)
-        if check_resp.status_code == 200:
-            pages_data = check_resp.json()
-            # `url` フィールドが存在し、かつ空ではない＝デプロイ完了の合図
-            if pages_data.get("url"):
-                print(f"-> Pages deployment detected! URL: {pages_data.get('url')}")
-                deployment_completed = True
-                break
-        
-        if i % 3 == 0:
-            print(f"   ... still waiting for pipeline deployment to finish (attempt {i+1}/30) ...")
-        time.sleep(10)
 
-    if not deployment_completed:
-        print("-> Warning: Pages deployment timed out or not deployed yet. Forcing configuration updates anyway.")
+def create_gitlab_ci(temp_dir):
+ci_file_path = os.path.join(temp_dir, ".gitlab-ci.yml")
 
-    # ステップ3: デプロイが完了した状態（器が完成した状態）で、Pagesのアクセス制限を全員（public）に変更
-    print(f"-> [3/4] Forcing Pages Access Level to Everyone (public)...")
-    access_applied = False
-    
-    # 依存関係エラーを回避するため、"public" と "enabled" の両方のパラメータ値でリトライを試みる
-    for val in ["public", "enabled"]:
-        acc_resp = requests.put(project_url, headers=headers, json={"pages_access_level": val}, timeout=30)
-        if acc_resp.status_code in (200, 204):
-            current_level = acc_resp.json().get("pages_access_level")
-            if current_level in ("public", "enabled"):
-                print(f"-> Verified: Pages access level is now successfully set to: {current_level}")
-                access_applied = True
-                break
-        time.sleep(2)
-    
-    if not access_applied:
-        print(f"-> [WARNING] Pages access level update sent, but verification failed. Current GitLab configuration may restrict this via instance level settings.")
 
-    # ステップ4: 最後に、一意のドメイン（Unique Domain）を確実に無効化する
-    print(f"-> [4/4] Disabling Unique Domain...")
-    pages_payload = {"pages_unique_domain_enabled": "false"}
-    resp = requests.patch(pages_url, headers=headers, data=pages_payload, timeout=30)
-    if resp.status_code in (200, 204):
-        print(f"-> [SUCCESS] Disabled unique domain for project {project_id}")
-    else:
-        print(f"-> [FAILED] Could not disable unique domain ({resp.status_code}): {resp.text}")
+gitlab_ci_content = """image: alpine:latest
 
-def create_gitlab_repo(repo_full_name):
-    repo_name = repo_full_name.split("/")[-1]
-
-    p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/']
-    base_url = "".join(p_chars)
-    
-    ns_url = base_url + "namespaces"
-    ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
-    ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
-    if ns_resp.status_code != 200:
-        raise Exception(f"GitLab namespace lookup failed: {ns_resp.status_code} {ns_resp.text}")
-
-    namespace = None
-    for item in ns_resp.json():
-        if item.get("path") == GL_NAMESPACE:
-            namespace = item
-            break
-
-    if namespace is None:
-        raise Exception(f"GitLab namespace '{GL_NAMESPACE}' not found")
-
-    api_url = base_url + "projects"
-    headers = {"PRIVATE-TOKEN": GL_TOKEN}
-
-    existing = requests.get(f"{api_url}?search={repo_name}", headers=headers, timeout=30)
-    if existing.status_code == 200:
-        for p in existing.json():
-            if p["path"] == repo_name and p["namespace"]["full_path"] == GL_NAMESPACE:
-                print(f"Already exists: {GL_NAMESPACE}/{repo_name}")
-                unprotect_gitlab_branch(p["id"])
-                return p["id"]
-
-    payload = {
-        "name": repo_name,
-        "path": repo_name,
-        "namespace_id": namespace["id"],
-        "visibility": "public",
-        "description": f"Synced from GitHub: {repo_full_name}",
-    }
-
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=30)
-    if resp.status_code not in (200, 201, 202):
-        raise Exception(f"GitLab project create failed: {resp.status_code} {resp.text}")
-
-    new_project = resp.json()
-    print(f"Created GitLab repo: {GL_NAMESPACE}/{repo_name}")
-    unprotect_gitlab_branch(new_project["id"])
-    return new_project["id"]
-
-def mirror_push(repo_full_name):
-    repo_name = repo_full_name.split("/")[-1]
-    
-    protocol = "".join(['h', 't', 't', 'p', 's', ':', '/', '/'])
-    gh_domain = "".join(['g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm', '/'])
-    gl_domain = "".join(['g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/'])
-    
-    gh_url = protocol + "x-access-token:" + GH_TOKEN + "@" + gh_domain + repo_full_name + ".git"
-    gl_url = protocol + "oauth2:" + GL_TOKEN + "@" + gl_domain + GL_NAMESPACE + "/" + repo_name + ".git"
-
-    temp_dir = repo_name
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-
-    subprocess.run(["git", "clone", gh_url, temp_dir], check=True)
-    try:
-        static_yml_path = os.path.join(temp_dir, ".github", "workflows", "static.yml")
-        ci_file_path = os.path.join(temp_dir, ".gitlab-ci.yml")
-        
-        if os.path.exists(static_yml_path):
-            print(f"-> GitHub Pages detected (.github/workflows/static.yml found)")
-            if not os.path.exists(ci_file_path):
-                gitlab_ci_content = """image: alpine:latest
 
 pages:
-  stage: deploy
-  script:
-    - mkdir -p .public_tmp
-    - cp -r * .public_tmp/ 2>/dev/null || true
-    - rm -rf .public_tmp/.git .public_tmp/.github
-    - mv .public_tmp public
-  artifacts:
-    paths:
-      - public
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_BRANCH == "master"
+stage: deploy
+script:
+- mkdir -p .public_tmp
+- cp -r * .public_tmp/ 2>/dev/null || true
+- cp -r .[^.]* .public_tmp/ 2>/dev/null || true
+- rm -rf .public_tmp/.git .public_tmp/.github .public_tmp/public
+- mv .public_tmp public
+artifacts:
+paths:
+- public
+rules:
+- if: $CI_COMMIT_BRANCH == "main"
+- if: $CI_COMMIT_BRANCH == "master"
 """
-                with open(ci_file_path, "w", encoding="utf-8") as f:
-                    f.write(gitlab_ci_content)
-                
-                subprocess.run(["git", "-C", temp_dir, "config", "user.name", "GitHub Actions"], check=True)
-                subprocess.run(["git", "-C", temp_dir, "config", "user.email", "actions@github.com"], check=True)
-                subprocess.run(["git", "-C", temp_dir, "add", ".gitlab-ci.yml"], check=True)
-                subprocess.run(["git", "-C", temp_dir, "commit", "-m", "chore: add .gitlab-ci.yml for GitLab Pages"], check=True)
-                print("-> Added .gitlab-ci.yml for GitLab Pages")
-        else:
-            print(f"-> Regular repository (No static.yml found). Skipping GitLab Pages setup.")
-            
-        subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--all"], check=True)
-        subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--tags"], check=True)
-        
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
 
-if __name__ == "__main__":
-    # デバッグ用に、特定の同期したいリポジトリを配列に直接指定することも可能です
-    # 例: public_repos = ["nattomaki10000/blog"]
-    public_repos = get_github_public_repos()
-    print(f"Found {len(public_repos)} repos")
 
-    for repo in public_repos:
-        try:
-            print(f"\n--- Starting sync for: {repo} ---")
-            # 競合回避のための特定スクリプト名によるスキップ条件を削除しました
-            gl_project_id = create_gitlab_repo(repo)
-            mirror_push(repo)
-            fix_gitlab_pages_settings(gl_project_id)
-            print(f"Synced successfully: {repo}")
-        except Exception as e:
-            print(f"Error syncing {repo}: {e}")
+with open(ci_file_path, "w", encoding="utf-8") as f:
+    f.write(gitlab_ci_content)
+
+print("-> Added .gitlab-ci.yml for GitLab Pages")
+
+
+def mirror_push(repo, gitlab_token):
+original_repo_name = repo["name"]
+
+
+if original_repo_name == GITHUB_PAGES_DOMAIN:
+    repo_name = GITLAB_PAGES_DOMAIN
+else:
+    repo_name = original_repo_name
+
+github_clone_url = repo["clone_url"]
+
+gitlab_clone_url = (
+    f"https://oauth2:{gitlab_token}"
+    f"@gitlab.com/{GITHUB_USER}/{repo_name}.git"
+)
+
+temp_dir = tempfile.mkdtemp(prefix="github_to_gitlab_")
+
+try:
+    print(f"\n=== {original_repo_name} ===")
+    print("-> Cloning GitHub repository...")
+
+    run_command(
+        [
+            "git",
+            "clone",
+            github_clone_url,
+            temp_dir
+        ]
+    )
+
+    replace_github_pages_domain(temp_dir)
+
+    static_yml = os.path.join(
+        temp_dir,
+        ".github",
+        "workflows",
+        "static.yml"
+    )
+
+    is_pages_repo = (
+        os.path.exists(static_yml)
+        or original_repo_name == GITHUB_PAGES_DOMAIN
+    )
+
+    if is_pages_repo:
+        ci_file_path = os.path.join(
+            temp_dir,
+            ".gitlab-ci.yml"
+        )
+
+        if not os.path.exists(ci_file_path):
+            create_gitlab_ci(temp_dir)
+
+    run_command(
+        [
+            "git",
+            "config",
+            "user.name",
+            "GitHub to GitLab Syncer"
+        ],
+        cwd=temp_dir
+    )
+
+    run_command(
+        [
+            "git",
+            "config",
+            "user.email",
+            "syncer@nattomaki10000.github.io"
+        ],
+        cwd=temp_dir
+    )
+
+    status = run_command(
+        ["git", "status", "--porcelain"],
+        cwd=temp_dir
+    )
+
+    if status:
+        run_command(
+            ["git", "add", "-A"],
+            cwd=temp_dir
+        )
+
+        run_command(
+            [
+                "git",
+                "commit",
+                "-m",
+                "Sync GitHub repository to GitLab"
+            ],
+            cwd=temp_dir
+        )
+
+    print("-> Adding GitLab remote...")
+
+    run_command(
+        [
+            "git",
+            "remote",
+            "add",
+            "gitlab",
+            gitlab_clone_url
+        ],
+        cwd=temp_dir
+    )
+
+    print("-> Pushing branches...")
+
+    run_command(
+        [
+            "git",
+            "push",
+            "gitlab",
+            "--all",
+            "--force"
+        ],
+        cwd=temp_dir
+    )
+
+    print("-> Pushing tags...")
+
+    run_command(
+        [
+            "git",
+            "push",
+            "gitlab",
+            "--tags",
+            "--force"
+        ],
+        cwd=temp_dir
+    )
+
+    return is_pages_repo
+
+finally:
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def fix_gitlab_pages_settings(project_id, gitlab_token):
+headers = {
+"PRIVATE-TOKEN": gitlab_token
+}
+
+
+print("-> Configuring GitLab Pages...")
+
+data = {
+    "pages_access_level": "enabled"
+}
+
+response = requests.put(
+    f"{GITLAB_API_URL}/projects/{project_id}",
+    headers=headers,
+    data=data
+)
+
+if response.ok:
+    print("-> GitLab Pages enabled")
+else:
+    print(
+        f"-> Failed to enable GitLab Pages: "
+        f"{response.status_code} {response.text}"
+    )
+
+
+def main():
+github_token = input("GitHub token: ").strip()
+gitlab_token = input("GitLab token: ").strip()
+
+
+print("-> Getting GitHub repositories...")
+
+repos = get_github_repos(github_token)
+
+print(f"-> Found {len(repos)} repositories")
+
+for repo in repos:
+    try:
+        gl_project = create_gitlab_repo(
+            repo["full_name"],
+            gitlab_token
+        )
+
+        is_pages_repo = mirror_push(
+            repo,
+            gitlab_token
+        )
+
+        if is_pages_repo:
+            fix_gitlab_pages_settings(
+                gl_project["id"],
+                gitlab_token
+            )
+
+    except Exception as e:
+        print(
+            f"-> ERROR: {repo['name']}: {e}"
+        )
+
+print("\nDone.")
+
+
+if **name** == "**main**":
+main()
