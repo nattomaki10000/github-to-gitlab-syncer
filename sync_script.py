@@ -10,10 +10,11 @@ GL_NAMESPACE = os.environ.get("GL_NAMESPACE", "nattomaki10000")
 
 def get_github_public_repos():
     url = "https://github.com"
+    # 修正点: 406エラーを引き起こす "Accept" ヘッダーを削除し、最もシンプルな認証のみにしました
     headers = {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GH_TOKEN}"
     }
+
     repos = []
     page = 1
     while True:
@@ -25,9 +26,11 @@ def get_github_public_repos():
         )
         if r.status_code != 200:
             raise Exception(f"GitHub API failed: {r.status_code} {r.text}")
+
         items = r.json()
         if not items:
             break
+
         for repo in items:
             if repo["owner"]["login"] != GH_USER:
                 continue
@@ -36,24 +39,23 @@ def get_github_public_repos():
             if repo["name"].startswith("."):
                 continue
             repos.append(repo["full_name"])
+
         page += 1
+
     return repos
 
 def unprotect_gitlab_branch(project_id, branch_name="main"):
     """GitLabの指定ブランチの保護設定をAPI経由で自動解除する機能"""
     url = f"https://gitlab.com{project_id}/protected_branches/{branch_name}"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
-    # 保護解除をリクエスト
     requests.delete(url, headers=headers, timeout=30)
     
-    # masterブランチの場合も考慮して両方解除を試みる
     url_master = f"https://gitlab.com{project_id}/protected_branches/master"
     requests.delete(url_master, headers=headers, timeout=30)
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
-    # GitLabAPIで namespace の ID を探す
     ns_url = "https://gitlab.com"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
@@ -77,7 +79,6 @@ def create_gitlab_repo(repo_full_name):
         for p in existing.json():
             if p["path"] == repo_name and p["namespace"]["full_path"] == GL_NAMESPACE:
                 print(f"Already exists: {GL_NAMESPACE}/{repo_name}")
-                # ★既存リポジトリの場合も、強制プッシュできるようにロックを自動解除
                 unprotect_gitlab_branch(p["id"])
                 return
 
@@ -95,13 +96,12 @@ def create_gitlab_repo(repo_full_name):
 
     new_project = resp.json()
     print(f"Created GitLab repo: {GL_NAMESPACE}/{repo_name}")
-    # ★新規作成リポジトリの初期ロックを自動解除
     unprotect_gitlab_branch(new_project["id"])
 
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
     gh_url = f"https://x-access-token:{GH_TOKEN}@://github.com{repo_full_name}.git"
-    gl_url = f"https://oauth2:{GL_TOKEN}@gitlab.com/{GL_NAMESPACE}/{repo_name}.git"
+    gl_url = f"https://oauth2:{GL_TOKEN}@://gitlab.com{GL_NAMESPACE}/{repo_name}.git"
 
     temp_dir = repo_name
     if os.path.exists(temp_dir):
@@ -139,7 +139,6 @@ def mirror_push(repo_full_name):
         else:
             print(f"-> Regular repository (No static.yml found). Skipping GitLab Pages setup.")
             
-        # 確実に強制プッシュが成功するようになります
         subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--all"], check=True)
         subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--tags"], check=True)
         
@@ -153,6 +152,9 @@ if __name__ == "__main__":
 
     for repo in public_repos:
         try:
+            # 自身の同期管理リポジトリは除外
+            if repo.split("/")[-1] == "github-to-gitlab-syncer":
+                continue
             create_gitlab_repo(repo)
             mirror_push(repo)
             print(f"Synced: {repo}")
