@@ -51,17 +51,17 @@ def unprotect_gitlab_branch(project_id, branch_name="main"):
     requests.delete(url_master, headers=headers, timeout=30)
 
 def fix_gitlab_pages_settings(project_id):
-    """【ドキュメントに準拠】GitLabのPages APIに対し、PUTメソッドを使って一意のドメインを無効化する"""
+    """【ドキュメント修正版】GitLabのPages APIに対し、PATCHメソッドを使って一意のドメインを無効化する"""
     p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
     # GitLab Pagesの設定更新用のエンドポイント（/projects/:id/pages）
     url = "".join(p_chars) + f"{project_id}/pages"
     
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
-    # ユニークドメイン設定を無効化する公式パラメータ
-    payload = {"is_unique_domain_enabled": False}
+    # ユニークドメイン設定を無効化する公式パラメータ（文字列の "false" に変換してフォームデータとして送信）
+    payload = {"is_unique_domain_enabled": "false"}
     
-    # メソッドを PATCH ではなく PUT に変更してリクエストを実行
-    resp = requests.put(url, headers=headers, json=payload, timeout=30)
+    # 修正点: メソッドを PUT から PATCH に変更、json= ではなく data= を使用して送信
+    resp = requests.patch(url, headers=headers, data=payload, timeout=30)
     if resp.status_code in (200, 204):
         print(f"-> Successfully disabled unique domain for project {project_id}")
     else:
