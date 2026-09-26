@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import requests
+import time
 
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 GL_TOKEN = os.environ.get("GL_TOKEN", "")
@@ -9,7 +10,7 @@ GH_USER = "nattomaki10000"
 GL_NAMESPACE = "nattomaki10000"
 
 def get_github_public_repos():
-    # システムによる勝手なURLの自動結合バグを防ぐため、1文字ずつの配列を合体
+    # システムによるURLの自動結合を防ぐため、1文字ずつの配列を合体
     chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'a', 'p', 'i', '.', 'g', 'i', 't', 'h', 'u', 'b', '.', 'c', 'o', 'm', '/', 'u', 's', 'e', 'r', 's', '/', 'n', 'a', 't', 't', 'o', 'm', 'a', 'k', 'i', '1', '0', '0', '0', '0', '/', 'r', 'e', 'p', 'o', 's']
     url = "".join(chars)
 
@@ -51,26 +52,34 @@ def unprotect_gitlab_branch(project_id, branch_name="main"):
     requests.delete(url_master, headers=headers, timeout=30)
 
 def fix_gitlab_pages_settings(project_id):
-    """プロジェクト更新APIを使って、一意のドメインを無効化し、Pagesの公開範囲を全員（public）にする"""
+    """【修正版】Push後に実行。Pages設定専用APIとプロジェクトAPIを適切に使い分けて設定を強制反映する"""
     p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
-    # プロジェクト設定全体の更新エンドポイント（/projects/:id）
-    url = "".join(p_chars) + f"{project_id}"
+    base_url = "".join(p_chars)
     
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
+
+    # 1. まずプロジェクト全体の公開範囲とは別に、Pages自体のアクセス制限を「public（全員）」にする（プロジェクトAPIを使用）
+    project_url = base_url + f"{project_id}"
+    proj_payload = {"pages_access_level": "public"}
+    requests.put(project_url, headers=headers, json=proj_payload, timeout=30)
+
+    # 2. 次にPages専用エンドポイントを使い、一意のドメイン（Unique Domain）を無効化する
+    # フォームデータ形式（data=）かつ文字列の "false" で送信することで、初期化未完了による400エラーを回避
+    pages_url = base_url + f"{project_id}/pages"
+    pages_payload = {"is_unique_domain_enabled": "false"}
     
-    # 修正：一意のドメインを無効にする正しいキー名「pages_unique_domain_enabled」を設定
-    # 追加：Pagesの公開設定を全員（public）にする「pages_access_level」を設定
-    payload = {
-        "pages_unique_domain_enabled": False,
-        "pages_access_level": "public"
-    }
-    
-    # プロジェクト更新は PUT メソッド、JSON形式で送信
-    resp = requests.put(url, headers=headers, json=payload, timeout=30)
+    resp = requests.patch(pages_url, headers=headers, data=pages_payload, timeout=30)
     if resp.status_code in (200, 204):
         print(f"-> Successfully updated Pages settings for project {project_id} (Unique Domain: Off, Access: Public)")
     else:
-        print(f"-> Warning: Could not update Pages settings ({resp.status_code}): {resp.text}")
+        # 万が一、GitLab側の反映に時間差がある場合のフォールバック
+        print(f"-> Retry updating unique domain status...")
+        time.sleep(2)
+        resp = requests.patch(pages_url, headers=headers, data=pages_payload, timeout=30)
+        if resp.status_code in (200, 204):
+            print(f"-> Successfully updated Pages settings for project {project_id} on retry")
+        else:
+            print(f"-> Warning: Could not disable unique domain ({resp.status_code}): {resp.text}")
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
@@ -102,9 +111,7 @@ def create_gitlab_repo(repo_full_name):
             if p["path"] == repo_name and p["namespace"]["full_path"] == GL_NAMESPACE:
                 print(f"Already exists: {GL_NAMESPACE}/{repo_name}")
                 unprotect_gitlab_branch(p["id"])
-                # 既存リポジトリに対しても設定を適用
-                fix_gitlab_pages_settings(p["id"])
-                return
+                return p["id"] # 後で設定変更するためにIDを返す
 
     payload = {
         "name": repo_name,
@@ -121,8 +128,7 @@ def create_gitlab_repo(repo_full_name):
     new_project = resp.json()
     print(f"Created GitLab repo: {GL_NAMESPACE}/{repo_name}")
     unprotect_gitlab_branch(new_project["id"])
-    # 新規作成リポジトリに対して設定を適用
-    fix_gitlab_pages_settings(new_project["id"])
+    return new_project["id"] # 後で設定変更するためにIDを返す
 
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
@@ -188,8 +194,15 @@ if __name__ == "__main__":
         try:
             if repo.split("/")[-1] == "github-to-gitlab-syncer":
                 continue
-            create_gitlab_repo(repo)
+            # 1. 最初にリポジトリを作成または確認して、プロジェクトIDを取得
+            gl_project_id = create_gitlab_repo(repo)
+            
+            # 2. 次にコードをPush（これによりGitLab Pagesが初期起動可能な状態になる）
             mirror_push(repo)
+            
+            # 3. 最後にPagesの設定を反映（Push後なので400エラーにならずに安全に更新可能）
+            fix_gitlab_pages_settings(gl_project_id)
+            
             print(f"Synced: {repo}")
         except Exception as e:
             print(f"Error syncing {repo}: {e}")
