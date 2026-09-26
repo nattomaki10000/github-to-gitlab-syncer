@@ -53,11 +53,11 @@ def unprotect_gitlab_branch(project_id, branch_name="main"):
 
 def fix_gitlab_pages_settings(project_id):
     """
-    【段階的適用版】
-    1. プロジェクト自体の可視性をpublicにする
-    2. バックエンドのPages初期化を待つ
-    3. Pagesのアクセスレベルを単独でpublic（全員）にする
-    4. 一意のドメイン（Unique Domain）を無効化する
+    【完全解決版】
+    1. プロジェクト自体のベース可視性をpublicにする
+    2. 初回のPagesデプロイ（ビルドパイプライン）が正常完了してURLが生成されるまで安全に待機する
+    3. 完全にデプロイが完了した後に、Pagesのアクセスレベルを単独で「public (Everyone)」にする
+    4. 最後に一意のドメイン（Unique Domain）を無効化する
     """
     p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
     base_url = "".join(p_chars)
@@ -66,36 +66,51 @@ def fix_gitlab_pages_settings(project_id):
     project_url = base_url + f"{project_id}"
     pages_url = base_url + f"{project_id}/pages"
 
+    # ステップ1: 大元のプロジェクト自体の可視性を確実に public に独立して設定
     print(f"-> [1/4] Ensuring project base visibility is public...")
     requests.put(project_url, headers=headers, json={"visibility": "public"}, timeout=30)
 
-    print(f"-> [2/4] Waiting for GitLab Pages backend to initialize...")
-    initialized = False
-    for _ in range(12):  
+    # ステップ2: 【超重要】CI/CDのPagesジョブが走り、デプロイに成功して「url」フィールドが生成されるまで待つ
+    print(f"-> [2/4] Waiting for GitLab Pages pipeline deployment to complete (Timeout: 5 min)...")
+    deployment_completed = False
+    
+    # 初回のCI実行とビルド、デプロイ完了まで時間が必要なため、10秒おきに最大30回（5分間）ループ待機
+    for i in range(30):
         check_resp = requests.get(pages_url, headers=headers, timeout=30)
         if check_resp.status_code == 200:
-            initialized = True
-            break
-        time.sleep(5)
+            pages_data = check_resp.json()
+            # `url` フィールドが存在し、かつ空ではない＝デプロイ完了の合図
+            if pages_data.get("url"):
+                print(f"-> Pages deployment detected! URL: {pages_data.get('url')}")
+                deployment_completed = True
+                break
+        
+        if i % 3 == 0:
+            print(f"   ... still waiting for pipeline deployment to finish (attempt {i+1}/30) ...")
+        time.sleep(10)
 
-    if not initialized:
-        print("-> Warning: Pages backend initialization timed out, but proceeding.")
+    if not deployment_completed:
+        print("-> Warning: Pages deployment timed out or not deployed yet. Forcing configuration updates anyway.")
 
+    # ステップ3: デプロイが完了した状態（器が完成した状態）で、Pagesのアクセス制限を全員（public）に変更
     print(f"-> [3/4] Forcing Pages Access Level to Everyone (public)...")
     access_applied = False
-    for _ in range(3):
-        acc_resp = requests.put(project_url, headers=headers, json={"pages_access_level": "public"}, timeout=30)
+    
+    # 依存関係エラーを回避するため、"public" と "enabled" の両方のパラメータ値でリトライを試みる
+    for val in ["public", "enabled"]:
+        acc_resp = requests.put(project_url, headers=headers, json={"pages_access_level": val}, timeout=30)
         if acc_resp.status_code in (200, 204):
-            if acc_resp.json().get("pages_access_level") == "public":
+            current_level = acc_resp.json().get("pages_access_level")
+            if current_level in ("public", "enabled"):
+                print(f"-> Verified: Pages access level is now successfully set to: {current_level}")
                 access_applied = True
                 break
         time.sleep(2)
     
-    if access_applied:
-        print(f"-> [SUCCESS] Pages access level verified as: Everyone (public)")
-    else:
-        print(f"-> [WARNING] Pages access level update sent, but verification failed.")
+    if not access_applied:
+        print(f"-> [WARNING] Pages access level update sent, but verification failed. Current GitLab configuration may restrict this via instance level settings.")
 
+    # ステップ4: 最後に、一意のドメイン（Unique Domain）を確実に無効化する
     print(f"-> [4/4] Disabling Unique Domain...")
     pages_payload = {"pages_unique_domain_enabled": "false"}
     resp = requests.patch(pages_url, headers=headers, data=pages_payload, timeout=30)
