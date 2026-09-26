@@ -10,13 +10,11 @@ GL_NAMESPACE = os.environ.get("GL_NAMESPACE", "nattomaki10000")
 
 def get_github_public_repos():
     url = "https://api.github.com/users/{}/repos".format(GH_USER)
-    # 認証なしにして、403/429フィルターを回避
     repos = []
     page = 1
     while True:
         r = requests.get(
             url,
-            # ヘッダーを付与しない（認証なし）
             params={"type": "owner", "per_page": 100, "page": page},
             timeout=30
         )
@@ -28,7 +26,6 @@ def get_github_public_repos():
             break
 
         for repo in items:
-            # フォークやプライベートを除外（ロジック維持）
             if repo["private"] or repo["fork"]:
                 continue
             if repo["name"].startswith("."):
@@ -51,7 +48,6 @@ def unprotect_gitlab_branch(project_id, branch_name="main"):
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
-    # namespace の ID を探す
     ns_url = "https://gitlab.com/api/v4/namespaces"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
@@ -111,12 +107,14 @@ def mirror_push(repo_full_name):
         if os.path.exists(static_yml_path):
             print(f"-> GitHub Pages detected (.github/workflows/static.yml found)")
             if not os.path.exists(ci_file_path):
+                # 修正点: 無限ループを防ぎ、GitLab Pagesが完璧に認識するフォルダ構造コマンドに変更
                 gitlab_ci_content = """pages:
   stage: deploy
   script:
-    - mkdir -p public
-    - cp -r * public/ 2>/dev/null || true
-    - rm -rf public/.git public/.github public/public
+    - mkdir -p .public_tmp
+    - cp -r * .public_tmp/ 2>/dev/null || true
+    - rm -rf .public_tmp/.git .public_tmp/.github
+    - mv .public_tmp public
   artifacts:
     paths:
       - public
@@ -148,7 +146,6 @@ if __name__ == "__main__":
 
     for repo in public_repos:
         try:
-            # 自身の同期管理リポジトリは除外
             if repo.split("/")[-1] == "github-to-gitlab-syncer":
                 continue
             create_gitlab_repo(repo)
