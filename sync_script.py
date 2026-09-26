@@ -51,21 +51,26 @@ def unprotect_gitlab_branch(project_id, branch_name="main"):
     requests.delete(url_master, headers=headers, timeout=30)
 
 def fix_gitlab_pages_settings(project_id):
-    """【ドキュメント修正版】GitLabのPages APIに対し、PATCHメソッドを使って一意のドメインを無効化する"""
+    """プロジェクト更新APIを使って、一意のドメインを無効化し、Pagesの公開範囲を全員（public）にする"""
     p_chars = ['h', 't', 't', 'p', 's', ':', '/', '/', 'g', 'i', 't', 'l', 'a', 'b', '.', 'c', 'o', 'm', '/', 'a', 'p', 'i', '/', 'v', '4', '/', 'p', 'r', 'o', 'j', 'e', 'c', 't', 's', '/']
-    # GitLab Pagesの設定更新用のエンドポイント（/projects/:id/pages）
-    url = "".join(p_chars) + f"{project_id}/pages"
+    # プロジェクト設定全体の更新エンドポイント（/projects/:id）
+    url = "".join(p_chars) + f"{project_id}"
     
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
-    # ユニークドメイン設定を無効化する公式パラメータ（文字列の "false" に変換してフォームデータとして送信）
-    payload = {"is_unique_domain_enabled": "false"}
     
-    # 修正点: メソッドを PUT から PATCH に変更、json= ではなく data= を使用して送信
-    resp = requests.patch(url, headers=headers, data=payload, timeout=30)
+    # 修正：一意のドメインを無効にする正しいキー名「pages_unique_domain_enabled」を設定
+    # 追加：Pagesの公開設定を全員（public）にする「pages_access_level」を設定
+    payload = {
+        "pages_unique_domain_enabled": False,
+        "pages_access_level": "public"
+    }
+    
+    # プロジェクト更新は PUT メソッド、JSON形式で送信
+    resp = requests.put(url, headers=headers, json=payload, timeout=30)
     if resp.status_code in (200, 204):
-        print(f"-> Successfully disabled unique domain for project {project_id}")
+        print(f"-> Successfully updated Pages settings for project {project_id} (Unique Domain: Off, Access: Public)")
     else:
-        print(f"-> Warning: Could not disable unique domain ({resp.status_code}): {resp.text}")
+        print(f"-> Warning: Could not update Pages settings ({resp.status_code}): {resp.text}")
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
@@ -97,7 +102,7 @@ def create_gitlab_repo(repo_full_name):
             if p["path"] == repo_name and p["namespace"]["full_path"] == GL_NAMESPACE:
                 print(f"Already exists: {GL_NAMESPACE}/{repo_name}")
                 unprotect_gitlab_branch(p["id"])
-                # 既存リポジトリに対しても、実行時に自動で一意のドメインをオフにする
+                # 既存リポジトリに対しても設定を適用
                 fix_gitlab_pages_settings(p["id"])
                 return
 
@@ -116,7 +121,7 @@ def create_gitlab_repo(repo_full_name):
     new_project = resp.json()
     print(f"Created GitLab repo: {GL_NAMESPACE}/{repo_name}")
     unprotect_gitlab_branch(new_project["id"])
-    # 新規作成リポジトリの設定を自動更新
+    # 新規作成リポジトリに対して設定を適用
     fix_gitlab_pages_settings(new_project["id"])
 
 def mirror_push(repo_full_name):
