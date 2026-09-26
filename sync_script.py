@@ -9,12 +9,11 @@ GH_USER = os.environ.get("GH_USER", "nattomaki10000")
 GL_NAMESPACE = os.environ.get("GL_NAMESPACE", "nattomaki10000")
 
 def get_github_public_repos():
-    url = "https://api.github.com/user/repos"
+    url = "https://github.com"
     headers = {
         "Authorization": f"Bearer {GH_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
-
     repos = []
     page = 1
     while True:
@@ -26,11 +25,9 @@ def get_github_public_repos():
         )
         if r.status_code != 200:
             raise Exception(f"GitHub API failed: {r.status_code} {r.text}")
-
         items = r.json()
         if not items:
             break
-
         for repo in items:
             if repo["owner"]["login"] != GH_USER:
                 continue
@@ -39,16 +36,25 @@ def get_github_public_repos():
             if repo["name"].startswith("."):
                 continue
             repos.append(repo["full_name"])
-
         page += 1
-
     return repos
+
+def unprotect_gitlab_branch(project_id, branch_name="main"):
+    """GitLabの指定ブランチの保護設定をAPI経由で自動解除する機能"""
+    url = f"https://gitlab.com{project_id}/protected_branches/{branch_name}"
+    headers = {"PRIVATE-TOKEN": GL_TOKEN}
+    # 保護解除をリクエスト
+    requests.delete(url, headers=headers, timeout=30)
+    
+    # masterブランチの場合も考慮して両方解除を試みる
+    url_master = f"https://gitlab.com{project_id}/protected_branches/master"
+    requests.delete(url_master, headers=headers, timeout=30)
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
     # GitLabAPIで namespace の ID を探す
-    ns_url = "https://gitlab.com/api/v4/namespaces"
+    ns_url = "https://gitlab.com"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
     if ns_resp.status_code != 200:
@@ -63,7 +69,7 @@ def create_gitlab_repo(repo_full_name):
     if namespace is None:
         raise Exception(f"GitLab namespace '{GL_NAMESPACE}' not found")
 
-    api_url = "https://gitlab.com/api/v4/projects"
+    api_url = "https://gitlab.com"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
 
     existing = requests.get(f"{api_url}?search={repo_name}", headers=headers, timeout=30)
@@ -71,6 +77,8 @@ def create_gitlab_repo(repo_full_name):
         for p in existing.json():
             if p["path"] == repo_name and p["namespace"]["full_path"] == GL_NAMESPACE:
                 print(f"Already exists: {GL_NAMESPACE}/{repo_name}")
+                # ★既存リポジトリの場合も、強制プッシュできるようにロックを自動解除
+                unprotect_gitlab_branch(p["id"])
                 return
 
     payload = {
@@ -85,44 +93,33 @@ def create_gitlab_repo(repo_full_name):
     if resp.status_code not in (200, 201, 202):
         raise Exception(f"GitLab project create failed: {resp.status_code} {resp.text}")
 
+    new_project = resp.json()
     print(f"Created GitLab repo: {GL_NAMESPACE}/{repo_name}")
+    # ★新規作成リポジトリの初期ロックを自動解除
+    unprotect_gitlab_branch(new_project["id"])
 
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
-    gh_url = f"https://x-access-token:{GH_TOKEN}@github.com/{repo_full_name}.git"
+    gh_url = f"https://x-access-token:{GH_TOKEN}@://github.com{repo_full_name}.git"
     gl_url = f"https://oauth2:{GL_TOKEN}@gitlab.com/{GL_NAMESPACE}/{repo_name}.git"
 
     temp_dir = repo_name
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
 
-    # 1. 判定とファイル操作を行うため、通常のクローンを実行
     subprocess.run(["git", "clone", gh_url, temp_dir], check=True)
     try:
-        # --- ★ここから：static.ymlの存在判定とGitLab Pages設定 ---
-        
-        # GitHub Pagesの自動公開設定（static.yml）のパス
         static_yml_path = os.path.join(temp_dir, ".github", "workflows", "static.yml")
         ci_file_path = os.path.join(temp_dir, ".gitlab-ci.yml")
         
-        # .github/workflows/static.yml が存在する場合のみ処理を実行
         if os.path.exists(static_yml_path):
             print(f"-> GitHub Pages detected (.github/workflows/static.yml found)")
-            
-            # すでにGitLab用の設定ファイルがない場合だけ、自動生成する
             if not os.path.exists(ci_file_path):
                 gitlab_ci_content = """pages:
   stage: deploy
   script:
-    # 1. 既存の public という名前のファイルやフォルダがあれば一旦退避
-    - if [ -d public ]; then mv public _original_public; fi
-    # 2. GitLabが必須とする公開用の「public」フォルダを新規作成
-    - mkdir public
-    # 3. リポジトリ内のすべてのファイルを新設した public フォルダ内にコピー
+    - mkdir -p public
     - cp -r * public/ 2>/dev/null || true
-    # 4. 退避させていた中身があれば、それも public 内に綺麗に戻す
-    - if [ -d _original_public ]; then cp -r _original_public/* public/ 2>/dev/null || true; rm -rf _original_public; fi
-    # 5. 管理用の不要なフォルダを削除して軽量化
     - rm -rf public/.git public/.github public/public
   artifacts:
     paths:
@@ -134,7 +131,6 @@ def mirror_push(repo_full_name):
                 with open(ci_file_path, "w", encoding="utf-8") as f:
                     f.write(gitlab_ci_content)
                 
-                # 生成した設定ファイルをGitのコミットに含める
                 subprocess.run(["git", "-C", temp_dir, "config", "user.name", "GitHub Actions"], check=True)
                 subprocess.run(["git", "-C", temp_dir, "config", "user.email", "actions@github.com"], check=True)
                 subprocess.run(["git", "-C", temp_dir, "add", ".gitlab-ci.yml"], check=True)
@@ -143,14 +139,11 @@ def mirror_push(repo_full_name):
         else:
             print(f"-> Regular repository (No static.yml found). Skipping GitLab Pages setup.")
             
-        # --- ★ここまで ---
-
-        # 2. GitLabへ強制ミラープッシュ（変更内容をすべて同期）
+        # 確実に強制プッシュが成功するようになります
         subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--all"], check=True)
         subprocess.run(["git", "-C", temp_dir, "push", "--force", gl_url, "--tags"], check=True)
         
     finally:
-        # 一時フォルダの完全削除
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
