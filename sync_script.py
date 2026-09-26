@@ -114,16 +114,22 @@ def mirror_push(repo_full_name):
                 gitlab_ci_content = """pages:
   stage: deploy
   script:
-    - mkdir .public
-    - cp -r * .public/ 2>/dev/null || true
-    - rm -rf .public/.git .public/.github
-    - mv .public public
+    # 1. 既存の public という名前のファイルやフォルダがあれば一旦退避
+    - if [ -d public ]; then mv public _original_public; fi
+    # 2. GitLabが必須とする公開用の「public」フォルダを新規作成
+    - mkdir public
+    # 3. リポジトリ内のすべてのファイルを新設した public フォルダ内にコピー
+    - cp -r * public/ 2>/dev/null || true
+    # 4. 退避させていた中身があれば、それも public 内に綺麗に戻す
+    - if [ -d _original_public ]; then cp -r _original_public/* public/ 2>/dev/null || true; rm -rf _original_public; fi
+    # 5. 管理用の不要なフォルダを削除して軽量化
+    - rm -rf public/.git public/.github public/public
   artifacts:
     paths:
       - public
-  only:
-    - main
-    - master
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "master"
 """
                 with open(ci_file_path, "w", encoding="utf-8") as f:
                     f.write(gitlab_ci_content)
