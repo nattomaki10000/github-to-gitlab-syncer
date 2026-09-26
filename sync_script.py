@@ -9,7 +9,7 @@ GH_USER = os.environ.get("GH_USER", "nattomaki10000")
 GL_NAMESPACE = os.environ.get("GL_NAMESPACE", "nattomaki10000")
 
 def get_github_public_repos():
-    url = "https://api.github.com/users/{}/repos".format(GH_USER)
+    url = "https://github.com{}/repos".format(GH_USER)
     repos = []
     page = 1
     while True:
@@ -37,18 +37,17 @@ def get_github_public_repos():
     return repos
 
 def unprotect_gitlab_branch(project_id, branch_name="main"):
-    """GitLabの指定ブランチの保護設定をAPI経由で自動解除する機能"""
-    url = f"https://gitlab.com/api/v4/projects/{project_id}/protected_branches/{branch_name}"
+    url = f"https://gitlab.com{project_id}/protected_branches/{branch_name}"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
     requests.delete(url, headers=headers, timeout=30)
     
-    url_master = f"https://gitlab.com/api/v4/projects/{project_id}/protected_branches/master"
+    url_master = f"https://gitlab.com{project_id}/protected_branches/master"
     requests.delete(url_master, headers=headers, timeout=30)
 
 def create_gitlab_repo(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
 
-    ns_url = "https://gitlab.com/api/v4/namespaces"
+    ns_url = "https://gitlab.com"
     ns_headers = {"PRIVATE-TOKEN": GL_TOKEN}
     ns_resp = requests.get(ns_url, headers=ns_headers, timeout=30)
     if ns_resp.status_code != 200:
@@ -63,7 +62,7 @@ def create_gitlab_repo(repo_full_name):
     if namespace is None:
         raise Exception(f"GitLab namespace '{GL_NAMESPACE}' not found")
 
-    api_url = "https://gitlab.com/api/v4/projects"
+    api_url = "https://gitlab.com"
     headers = {"PRIVATE-TOKEN": GL_TOKEN}
 
     existing = requests.get(f"{api_url}?search={repo_name}", headers=headers, timeout=30)
@@ -92,8 +91,8 @@ def create_gitlab_repo(repo_full_name):
 
 def mirror_push(repo_full_name):
     repo_name = repo_full_name.split("/")[-1]
-    gh_url = f"https://x-access-token:{GH_TOKEN}@github.com/{repo_full_name}.git"
-    gl_url = f"https://oauth2:{GL_TOKEN}@gitlab.com/{GL_NAMESPACE}/{repo_name}.git"
+    gh_url = f"https://x-access-token:{GH_TOKEN}@://github.com{repo_full_name}.git"
+    gl_url = f"https://oauth2:{GL_TOKEN}@://gitlab.com{GL_NAMESPACE}/{repo_name}.git"
 
     temp_dir = repo_name
     if os.path.exists(temp_dir):
@@ -107,8 +106,10 @@ def mirror_push(repo_full_name):
         if os.path.exists(static_yml_path):
             print(f"-> GitHub Pages detected (.github/workflows/static.yml found)")
             if not os.path.exists(ci_file_path):
-                # 修正点: 無限ループを防ぎ、GitLab Pagesが完璧に認識するフォルダ構造コマンドに変更
-                gitlab_ci_content = """pages:
+                # 修正点: 共有Runnerで確実に実行されるよう、軽量な alpine イメージを明示
+                gitlab_ci_content = """image: alpine:latest
+
+pages:
   stage: deploy
   script:
     - mkdir -p .public_tmp
@@ -128,7 +129,8 @@ def mirror_push(repo_full_name):
                 subprocess.run(["git", "-C", temp_dir, "config", "user.name", "GitHub Actions"], check=True)
                 subprocess.run(["git", "-C", temp_dir, "config", "user.email", "actions@github.com"], check=True)
                 subprocess.run(["git", "-C", temp_dir, "add", ".gitlab-ci.yml"], check=True)
-                subprocess.run(["git", "-C", temp_dir, "commit", "-m", "chore: add .gitlab-ci.yml for GitLab Pages [skip ci]"], check=True)
+                # 修正点: コミットメッセージからスキップ命令（[skip ci]）を完全に消し去りました
+                subprocess.run(["git", "-C", temp_dir, "commit", "-m", "chore: add .gitlab-ci.yml for GitLab Pages"], check=True)
                 print("-> Added .gitlab-ci.yml for GitLab Pages")
         else:
             print(f"-> Regular repository (No static.yml found). Skipping GitLab Pages setup.")
