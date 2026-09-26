@@ -25,4 +25,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GL_TOKEN: ${{ secrets.GL_TOKEN }}
           GH_USER: nattomaki10000
+          GL_NAMESPACE: nattomaki10000
         run: python sync_script.py
