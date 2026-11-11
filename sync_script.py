@@ -87,6 +87,46 @@ def get_github_repos(github_token):
     return list(repos_by_full_name.values())
 
 
+def filter_repositories(repos, repository_filter):
+    """Filter by comma-separated GitHub full names, e.g. owner/repo."""
+    requested = {
+        name.strip().lower()
+        for name in repository_filter.split(",")
+        if name.strip()
+    }
+
+    if not requested:
+        raise RuntimeError(
+            "SYNC_REPOSITORIES is set but contains no repository names. "
+            "Use comma-separated owner/repo values."
+        )
+
+    invalid = sorted(name for name in requested if name.count("/") != 1)
+    if invalid:
+        raise RuntimeError(
+            "Invalid SYNC_REPOSITORIES value(s): "
+            + ", ".join(invalid)
+            + ". Use owner/repo format."
+        )
+
+    repos_by_name = {
+        repo["full_name"].lower(): repo
+        for repo in repos
+    }
+    missing = sorted(requested - repos_by_name.keys())
+    if missing:
+        raise RuntimeError(
+            "Requested repository/repositories were not found or are not "
+            "accessible to GH_TOKEN: "
+            + ", ".join(missing)
+        )
+
+    return [
+        repo for repo in repos
+        if repo["full_name"].lower() in requested
+    ]
+
+
 def get_gitlab_namespace_id(namespace_path, gitlab_token):
     headers = {
         "PRIVATE-TOKEN": gitlab_token
@@ -373,7 +413,15 @@ def main():
 
     print("-> Getting GitHub repositories...")
     repos = get_github_repos(github_token)
-    print(f"-> Found {len(repos)} repositories")
+
+    repository_filter = os.environ.get("SYNC_REPOSITORIES")
+    if repository_filter is not None:
+        repos = filter_repositories(repos, repository_filter)
+        print(f"-> Filtering to {len(repos)} requested repository/repositories")
+    else:
+        print("-> SYNC_REPOSITORIES is not set; syncing all available repositories")
+
+    print(f"-> Found {len(repos)} repositories to sync")
 
     for repo in repos:
         try:
